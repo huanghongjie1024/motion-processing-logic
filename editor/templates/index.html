@@ -1,0 +1,2029 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Robot Motion Editor</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: sans-serif; background-color: #2d2d2d; }
+        * { user-select: none; } 
+
+        /* SIDEBAR */
+        #sidebar {
+            position: absolute; top: 10px; left: 10px; 
+            background: rgba(255,255,255,0.95); padding: 15px;
+            border-radius: 8px; width: 300px; max-height: 60vh; overflow-y: auto;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            z-index: 100;
+            display: flex; flex-direction: column; gap: 10px;
+            user-select: text;
+        }
+        .section-label {
+            font-weight: bold; font-size: 12px; color: #666; text-transform: uppercase; 
+            margin-top: 10px; border-bottom: 1px solid #ddd;
+        }
+
+        /* BOTTOM EDITOR */
+        #curveEditor {
+            position: absolute; bottom: 0; left: 0; width: 100%; height: 40vh;
+            min-height: 180px; max-height: 85vh;
+            box-sizing: border-box;
+            background: #fff; border-top: 2px solid #444; z-index: 100;
+            display: none;
+            padding: 0;
+        }
+
+        /* Drag the top edge to resize the joint curve panel vertically. */
+        #curveResizeHandle {
+            position: absolute;
+            top: -7px; left: 0; right: 0;
+            height: 14px;
+            cursor: ns-resize;
+            z-index: 105;
+            touch-action: none;
+        }
+        #curveResizeHandle::after {
+            content: '';
+            position: absolute;
+            left: 50%; top: 5px;
+            width: 72px; height: 4px;
+            transform: translateX(-50%);
+            border-radius: 3px;
+            background: #777;
+            box-shadow: 0 0 0 1px rgba(255,255,255,0.65);
+            transition: width 0.15s, background 0.15s;
+        }
+        #curveResizeHandle:hover::after,
+        body.curve-panel-resizing #curveResizeHandle::after {
+            width: 110px;
+            background: #007bff;
+        }
+        body.curve-panel-resizing,
+        body.curve-panel-resizing * {
+            cursor: ns-resize !important;
+            user-select: none !important;
+        }
+
+        canvas#nativeCurveCanvas {
+            width: 100%; height: 100%;
+            display: block;
+            cursor: crosshair;
+        }
+
+        /* OVERLAYS */
+        #editorControls {
+            position: absolute; top: 10px; left: 10px; right: 10px;
+            display: flex; justify-content: space-between; pointer-events: none;
+        }
+        .control-box { pointer-events: auto; background: rgba(255,255,255,0.8); padding: 5px 10px; border-radius: 4px; border: 1px solid #ccc; }
+
+        /* BOTTOM SLIDER */
+        #timelineWrapper {
+            position: absolute; bottom: 5px; left: 10px; right: 10px; height: 30px;
+            display: flex; align-items: center; gap: 10px;
+            z-index: 102; background: rgba(255,255,255,0.8);
+            padding: 0 10px; border-radius: 15px;
+        }
+        input[type=range] { flex: 1; cursor: pointer; }
+
+        /* FORM ELEMENTS */
+        input[type=text] { width: 100%; box-sizing: border-box; padding: 6px; margin-bottom:5px;}
+        button { 
+            padding: 8px; width: 100%; cursor: pointer;
+            background-color: #007bff; color: white; border: none; border-radius: 4px; 
+            font-weight: bold; transition: background 0.2s;
+        }
+        button:hover { background-color: #0056b3; }
+        button.success { background-color: #28a745; }
+        button.warning { background-color: #ffc107; color: #000; }
+        button.danger { background-color: #dc3545; }
+        button.secondary { background-color: #6c757d; }
+        .trim-panel {
+            background: #f6f6f6; border: 1px solid #ddd; border-radius: 6px;
+            padding: 8px; display: flex; flex-direction: column; gap: 6px;
+            font-size: 12px;
+        }
+        .trim-row { display: flex; gap: 6px; align-items: center; }
+        .trim-row label { flex: 0 0 42px; }
+        .trim-row input[type=number] {
+            flex: 1 1 auto; min-width: 0; width: auto; box-sizing: border-box; padding: 5px;
+            border: 1px solid #bbb; border-radius: 4px;
+        }
+        .trim-row button { width: auto; flex: 0 0 92px; padding: 6px; font-size: 11px; }
+        #undoBtn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+        #channelsPanel {
+            position: absolute; top: 10px; right: 10px;
+            width: 260px; max-width: calc(100vw - 20px);
+            max-height: max(70px, calc(100vh - var(--curve-panel-height, 0px) - 30px));
+            box-sizing: border-box; padding: 12px;
+            background: rgba(255,255,255,0.95); border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3); z-index: 100;
+            display: flex; flex-direction: column; gap: 10px;
+        }
+        #channelsTitle { margin: 0; font-size: 14px; flex-shrink: 0; }
+        #jointListContainer {
+            min-height: 0; overflow-y: auto; border: 1px solid #ccc; background: #f9f9f9;
+        }
+        #jointListContainer:empty::before { content: 'Load motion to show channels'; display: block; padding: 10px; color: #777; font-size: 12px; }
+        .joint-item { padding: 6px; cursor: pointer; font-size: 12px; border-bottom: 1px solid #eee; }
+        .joint-item.active { background: #007bff; color: white; }
+        .joint-item.special { background: #eef; font-weight: 500; }
+        .joint-item.special.active { background: #007bff; color: white; }
+    </style>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/examples/jsm/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+                "urdf-loader": "https://unpkg.com/urdf-loader@0.12.1/src/URDFLoader.js"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="sidebar">
+        <h3 style="margin:0; text-align:center;">Robot Motion Editor</h3>
+        <div class="control-group">
+            <input type="text" id="urdfName" placeholder="robot.urdf（可选）">
+            <button id="loadUrdfBtn">加载机器人模型</button>
+            <button id="focusRobotBtn" class="secondary" style="margin-top:6px;">找回机器人 / 重置视角</button>
+            <label style="display:block; font-size:12px; margin-top:6px;"><input id="followRobotCamera" type="checkbox" checked> 镜头跟随机器人位置</label>
+        </div>
+        <div class="control-group">
+            <input type="file" id="npzInput" accept=".npz">
+            <small id="statusMsg" style="color:#666;">No motion loaded</small>
+        </div>
+        <button class="warning" id="smoothBtn" style="margin-bottom:5px;">Smooth Current Curve</button>
+        <button class="secondary" id="undoBtn" style="margin-bottom:5px;" disabled>Undo Last Step (Ctrl+Z)</button>
+
+        <div class="section-label">SG 滤波 · 当前曲线 / 全部关节</div>
+        <div class="trim-panel" id="sgFilterPanel">
+            <div class="trim-row"><label for="sgWindow">窗口</label><input id="sgWindow" type="number" min="3" max="51" step="2" value="5"></div>
+            <div class="trim-row"><label for="sgPolyorder">阶数</label><input id="sgPolyorder" type="number" min="0" max="5" value="3"></div>
+            <div class="trim-row"><label for="sgStrength">强度 %</label><input id="sgStrength" type="number" min="1" max="100" value="100"></div>
+            <label><input id="sgAllJoints" type="checkbox"> 直接作用所有关节</label>
+            <button id="applySgFilter" class="warning">应用 SG 滤波</button>
+            <small>默认处理当前选中的关节、Base 位置或旋转通道。勾选后使用相同参数一次处理全部 joint_pos，不修改 Base 位置和旋转；整次操作可一次撤销。窗口必须为奇数且大于阶数。</small>
+        </div>
+
+        <div class="section-label">局部去抖 · 保护尖峰</div>
+        <div class="trim-panel" id="selectiveSmoothPanel">
+            <div class="trim-row"><label for="smoothStart">起始帧</label><input id="smoothStart" type="number" min="0" value="0"><button id="smoothStartCurrent" class="secondary">使用当前帧</button></div>
+            <div class="trim-row"><label for="smoothEnd">结束帧</label><input id="smoothEnd" type="number" min="0" value="0"><button id="smoothEndCurrent" class="secondary">使用当前帧</button></div>
+            <div class="trim-row"><label for="smoothWindow">窗口</label><input id="smoothWindow" type="number" min="3" max="21" step="2" value="5"></div>
+            <div class="trim-row"><label for="smoothStrength">强度 %</label><input id="smoothStrength" type="number" min="1" max="100" value="100"></div>
+            <div class="trim-row"><label for="smoothFade">衔接帧</label><input id="smoothFade" type="number" min="1" max="100" value="3"></div>
+            <div class="trim-row"><label for="smoothProtectRadius">保护 ±</label><input id="smoothProtectRadius" type="number" min="0" value="2"><button id="protectSmoothFrame" class="secondary">保护当前帧</button></div>
+            <div id="smoothProtectedFrames">保护区间：无</div>
+            <div class="trim-row"><button id="clearSmoothProtection" class="secondary">清除保护</button><button id="previewSelectiveSmooth" class="warning">预览去抖</button></div>
+            <div class="trim-row"><button id="applySelectiveSmooth" class="success" disabled>应用预览</button><button id="cancelSelectiveSmooth" class="secondary">取消预览</button></div>
+            <small>仅处理当前通道的选定帧段。先定位峰顶，保护其前后帧；可多次添加保护区间。橙线为预览，蓝线为原数据，绿色为保护区。预览不改变 3D 或导出数据；应用后可撤销。切换通道、裁剪或撤销会清除保护设置。</small>
+            <small id="smoothPreviewStatus" aria-live="polite"></small>
+        </div>
+
+        <div class="section-label">Joint Angle Offset</div>
+        <div class="trim-panel">
+            <div>Selected Joint: <b id="offsetJointName">None</b></div>
+            <div class="trim-row">
+                <label style="width:42px;">Rad</label>
+                <input type="number" id="jointOffsetRadInput" step="0.01" value="0">
+                <button id="applyJointOffsetBtn" class="warning">Apply</button>
+            </div>
+            <div class="trim-row">
+                <button id="clearJointOffsetBtn" class="secondary">Clear Input</button>
+            </div>
+            <small style="color:#777;">Adds this radian offset to all frames of the selected joint. Values exceeding URDF angle limits are clamped to the limits. Unit: radian.</small>
+        </div>
+
+        <div class="section-label">Base Height Offset</div>
+        <div class="trim-panel">
+            <div>All frames: <b>Base Z</b></div>
+            <div class="trim-row">
+                <label for="baseHeightOffsetInput">Meters</label>
+                <input type="number" id="baseHeightOffsetInput" step="0.01" value="0" aria-describedby="baseHeightOffsetHelp">
+                <button id="applyBaseHeightOffsetBtn" class="warning">Apply</button>
+            </div>
+            <div class="trim-row">
+                <button id="clearBaseHeightOffsetBtn" class="secondary">Clear Input</button>
+            </div>
+            <small id="baseHeightOffsetHelp" style="color:#777;">Each Apply adds this offset to Base Z in every frame. Positive raises; negative lowers. Unit: meter. Clear Input only resets the input; use Undo to revert.</small>
+        </div>
+
+        <div class="section-label">当前曲线 · 范围平滑拖动</div>
+        <div class="trim-panel">
+            <label><input id="baseHeightRangeEnabled" type="checkbox"> 启用两条范围线（当前曲线）</label>
+            <div>调整范围：<b id="baseHeightRangeLabel">未加载动作</b></div>
+            <button id="resetBaseHeightRange" class="secondary">范围重置为整段</button>
+            <div class="trim-row"><label for="standingMinSeconds">最短秒</label><input id="standingMinSeconds" type="number" min="0" step="0.1" value="3"></div>
+            <div class="trim-row"><label for="standingMaxHorizontalSpeed">XY 速</label><input id="standingMaxHorizontalSpeed" type="number" min="0" step="0.01" value="0.08"></div>
+            <div class="trim-row"><label for="standingMaxHeightSpeed">Z 速</label><input id="standingMaxHeightSpeed" type="number" min="0" step="0.005" value="0.02"></div>
+            <button id="autoSelectStandingRange" class="warning">检测站立区间</button>
+            <div class="trim-row"><button id="previousStandingRange" class="secondary" disabled>上一个区间</button><button id="nextStandingRange" class="secondary" disabled>下一个区间</button></div>
+            <small>按 Base 水平速度（m/s）、Base Z 速度（m/s）和最短持续时间判断站立。三个参数可调；检测只移动范围线，不修改动作。</small>
+            <small id="standingDetectionStatus" aria-live="polite"></small>
+            <small>选择任意关节、Base XYZ 或 Base 旋转曲线，左右拖动两条青色竖线选择范围，再上下拖动范围内的曲线点。拖动点附近跟随变化，向两端平滑减弱；边界点及范围外不变。松开完成一次编辑，Ctrl+Z 撤销。</small>
+            <div class="trim-row"><label for="ankleSoleOffset">脚底偏移 m</label><input id="ankleSoleOffset" type="number" min="0" step="0.001" placeholder="由模型确定"></div>
+            <label for="groundLeftAnkle">左 ankle_roll 关节</label><input id="groundLeftAnkle" type="text" placeholder="填写左踝滚转关节名">
+            <label for="groundRightAnkle">右 ankle_roll 关节</label><input id="groundRightAnkle" type="text" placeholder="填写右踝滚转关节名">
+            <button id="applySelectedAnkleGround" class="success">选中区域自动贴地</button>
+            <label for="levelLeftPitch">左 ankle_pitch 关节</label><input id="levelLeftPitch" type="text" placeholder="填写左踝俯仰关节名">
+            <label for="levelRightPitch">右 ankle_pitch 关节</label><input id="levelRightPitch" type="text" placeholder="填写右踝俯仰关节名">
+            <label><input id="levelFeetAlsoGround" type="checkbox" checked> 双脚调平后同时自动贴地</label>
+            <button id="applySelectedFeetLevel" class="success">选中区域双脚平行地面</button>
+            <small>按 ankle_roll 局部 +Z 为脚掌朝上方向，调整双脚 pitch / roll，遵守 URDF 限位。调平指两脚姿态水平，不保证两脚同时接触地面；同时贴地会移动 Base Z，使较低脚底着地。</small>
+            <small>按填写的脚踝原点到脚底的竖直距离估算。逐帧升降 Base Z，使较低脚底到达 Z=0；含两端，范围外不变，可撤销。此操作会下移腾空帧，区间边界可能有高度跳变。</small>
+            <small id="ankleGroundStatus" aria-live="polite"></small>
+        </div>
+
+        <div class="section-label">滑动窗口 · 离地检测与拔高</div>
+        <div class="trim-panel">
+            <div class="trim-row"><label for="groundWindowFrames">窗口帧</label><input id="groundWindowFrames" type="number" min="1" step="1" value="60"></div>
+            <div class="trim-row"><label for="groundStepFrames">步长 n</label><input id="groundStepFrames" type="number" min="1" step="1" value="30"></div>
+            <div class="trim-row"><label for="groundClearance">离地米</label><input id="groundClearance" type="number" min="0" step="0.001" value="0"></div>
+            <label for="groundLeftLink">左脚 link</label>
+            <input id="groundLeftLink" type="text" placeholder="填写左脚 link 名">
+            <label for="groundRightLink">右脚 link</label>
+            <input id="groundRightLink" type="text" placeholder="填写右脚 link 名">
+            <button id="applyWindowGroundLift" class="warning">检测并拔高整段动作</button>
+            <small>以脚部可视模型最低点到地面 Z=0 的距离为准，窗口内检查每一帧。步长不能超过窗口。仅增加 Base Z，不下压腾空动作；窗口插值后逐帧补足高度，可撤销。link 名称需对应当前 URDF。</small>
+            <small id="groundLiftStatus" aria-live="polite"></small>
+        </div>
+
+        <div class="section-label">Trim Motion</div>
+        <div class="trim-panel">
+            <div>Keep Range: <b id="trimRangeDisplay">0 - 0</b></div>
+            <div class="trim-row">
+                <label style="width:42px;">Start</label>
+                <input type="number" id="trimStartInput" min="0" value="0">
+                <button id="setTrimStartBtn" class="secondary">Use Current</button>
+            </div>
+            <div class="trim-row">
+                <label style="width:42px;">End</label>
+                <input type="number" id="trimEndInput" min="0" value="0">
+                <button id="setTrimEndBtn" class="secondary">Use Current</button>
+            </div>
+            <div class="trim-row">
+                <button id="applyTrimBtn" class="danger">Apply Trim</button>
+                <button id="resetTrimBtn" class="secondary">Reset Range</button>
+            </div>
+            <small style="color:#777;">Apply Trim keeps only Start~End frames before export.</small>
+        </div>
+        
+        <!-- Instructions for Keyboard -->
+        <div style="font-size:10px; color:#666; background:#eee; padding:5px; margin-bottom:5px;">
+            <b>Keys:</b> &larr;/&rarr; Frame (step) | &uarr;/&darr; Value (hold) | Ctrl+Z Undo
+        </div>
+
+        <button id="saveBtn" class="success" style="margin-top:10px;">Download Motion NPZ</button>
+    </div>
+
+    <aside id="channelsPanel" aria-labelledby="channelsTitle">
+        <h3 id="channelsTitle">Channels</h3>
+        <div id="jointListContainer"></div>
+    </aside>
+
+    <div id="curveEditor">
+        <div id="curveResizeHandle" title="Drag to resize panel; double-click to reset"></div>
+        <div id="editorControls">
+            <div class="control-box">
+                <span style="font-weight:bold; color:#007bff" id="activeJointName">None</span>
+                <span style="font-size:11px; color:#666; margin-left:8px;">Wheel: zoom value axis</span>
+                <button id="resetCurveZoomBtn" class="secondary" style="width:auto; padding:4px 8px; margin-left:8px;">Reset Zoom</button>
+            </div>
+            <div class="control-box">
+                Frame: <span id="frameDisplay">0</span> | Value: <span id="valDisplay">0.00</span>
+            </div>
+        </div>
+        <div id="timelineWrapper">
+            <span style="font-size:12px; font-weight:bold;">Play/Scrub:</span>
+            <input type="range" id="timelineSlider" min="0" max="100" value="0">
+        </div>
+        <canvas id="nativeCurveCanvas"></canvas>
+    </div>
+
+    <dialog id="groundLiftDialog">
+        <p id="groundLiftProgress" aria-live="polite">正在计算脚部离地距离…</p>
+        <button id="cancelGroundLift" class="secondary">取消</button>
+    </dialog>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+        import URDFLoader from 'urdf-loader';
+
+        // =========================================================
+        //  EDITOR LOGIC & CANVAS
+        // =========================================================
+        const canvas = document.getElementById('nativeCurveCanvas');
+        const ctx = canvas.getContext('2d');
+        let editorWidth, editorHeight;
+        
+        let isDragging = false;
+        let dragIndex = -1;
+        let hoverIndex = -1;
+        let baseHeightStart = 0, baseHeightEnd = 0;
+        let baseHeightBoundaryDrag = null;
+        let baseHeightCurveDrag = null;
+        let standingIntervals = [];
+        let standingIntervalIndex = -1;
+        // Display-only value range; null keeps the original automatic scale.
+        let curveValueRange = null;
+        let smoothPreview = null;
+        let smoothProtectedRanges = [];
+        
+        const PAD_TOP = 40;
+        const PAD_BOTTOM = 50;
+        const PAD_LEFT = 10;
+        const PAD_RIGHT = 10;
+
+        // =========================================================
+        //  RESIZABLE CURVE PANEL
+        // =========================================================
+        const curveEditor = document.getElementById('curveEditor');
+        const curveResizeHandle = document.getElementById('curveResizeHandle');
+        const DEFAULT_EDITOR_HEIGHT_RATIO = 0.40;
+        const MIN_EDITOR_HEIGHT_PX = 180;
+        const MAX_EDITOR_HEIGHT_RATIO = 0.85;
+        const EDITOR_HEIGHT_STORAGE_KEY = 'motionCurveEditorHeightPx';
+        let curvePanelResizeState = null;
+
+        function clampCurveEditorHeight(heightPx) {
+            const maxHeight = Math.max(MIN_EDITOR_HEIGHT_PX, window.innerHeight * MAX_EDITOR_HEIGHT_RATIO);
+            return Math.max(MIN_EDITOR_HEIGHT_PX, Math.min(maxHeight, heightPx));
+        }
+
+        function saveCurveEditorHeight(heightPx) {
+            try {
+                window.localStorage.setItem(EDITOR_HEIGHT_STORAGE_KEY, String(Math.round(heightPx)));
+            } catch (_) {
+                // localStorage may be unavailable in private/restricted browser contexts.
+            }
+        }
+
+        function setCurveEditorHeight(heightPx, persist=true) {
+            const clampedHeight = clampCurveEditorHeight(heightPx);
+            curveEditor.style.height = `${clampedHeight}px`;
+            if(persist) saveCurveEditorHeight(clampedHeight);
+            resizeEditor();
+        }
+
+        function restoreCurveEditorHeight() {
+            let savedHeight = NaN;
+            try {
+                savedHeight = Number.parseFloat(window.localStorage.getItem(EDITOR_HEIGHT_STORAGE_KEY));
+            } catch (_) {
+                savedHeight = NaN;
+            }
+            const initialHeight = Number.isFinite(savedHeight)
+                ? savedHeight
+                : window.innerHeight * DEFAULT_EDITOR_HEIGHT_RATIO;
+            curveEditor.style.height = `${clampCurveEditorHeight(initialHeight)}px`;
+        }
+
+        curveResizeHandle.addEventListener('pointerdown', (e) => {
+            if(e.button !== 0) return;
+            e.preventDefault();
+            e.stopPropagation();
+            curvePanelResizeState = {
+                pointerId: e.pointerId,
+                startY: e.clientY,
+                startHeight: curveEditor.getBoundingClientRect().height,
+            };
+            curveResizeHandle.setPointerCapture(e.pointerId);
+            document.body.classList.add('curve-panel-resizing');
+        });
+
+        curveResizeHandle.addEventListener('pointermove', (e) => {
+            if(!curvePanelResizeState || e.pointerId !== curvePanelResizeState.pointerId) return;
+            e.preventDefault();
+            // The panel is attached to the bottom: moving upward increases its height.
+            const deltaY = curvePanelResizeState.startY - e.clientY;
+            setCurveEditorHeight(curvePanelResizeState.startHeight + deltaY, false);
+        });
+
+        function finishCurvePanelResize(e) {
+            if(!curvePanelResizeState || e.pointerId !== curvePanelResizeState.pointerId) return;
+            const finalHeight = curveEditor.getBoundingClientRect().height;
+            curvePanelResizeState = null;
+            document.body.classList.remove('curve-panel-resizing');
+            saveCurveEditorHeight(finalHeight);
+            if(curveResizeHandle.hasPointerCapture(e.pointerId)) {
+                curveResizeHandle.releasePointerCapture(e.pointerId);
+            }
+            resizeEditor();
+        }
+        curveResizeHandle.addEventListener('pointerup', finishCurvePanelResize);
+        curveResizeHandle.addEventListener('pointercancel', finishCurvePanelResize);
+        curveResizeHandle.addEventListener('dblclick', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setCurveEditorHeight(window.innerHeight * DEFAULT_EDITOR_HEIGHT_RATIO);
+        });
+
+        restoreCurveEditorHeight();
+
+        function resizeEditor() {
+            const parent = document.getElementById('curveEditor');
+            document.documentElement.style.setProperty('--curve-panel-height', `${parent.clientHeight}px`);
+            update3DViewport();
+            if(parent.style.display === 'none') return;
+            editorWidth = parent.clientWidth;
+            editorHeight = parent.clientHeight;
+            const dpr = window.devicePixelRatio || 1;
+            canvas.width = editorWidth * dpr;
+            canvas.height = editorHeight * dpr;
+            ctx.scale(dpr, dpr);
+            canvas.style.width = editorWidth + 'px';
+            canvas.style.height = editorHeight + 'px';
+            drawCurve();
+        }
+        window.addEventListener('resize', resizeEditor);
+
+        // Unified Data API
+        function getChannelValueFor(f, type, index) {
+            if(!motionData) return 0;
+            if(f < 0 || f >= motionData.num_frames) return 0;
+            if(type === 'joint') return motionData.joint_pos[f][index];
+            if(type === 'pos') return motionData.base_pos_w[f][index];
+            if(type === 'rot') {
+                const qRaw = motionData.base_quat_w[f];
+                const q = new THREE.Quaternion(qRaw[1], qRaw[2], qRaw[3], qRaw[0]);
+                const e = new THREE.Euler().setFromQuaternion(q, 'XYZ');
+                return [e.x, e.y, e.z][index];
+            }
+            return 0;
+        }
+
+        function getChannelValue(f) {
+            return getChannelValueFor(f, activeType, activeIndex);
+        }
+
+        function setChannelValueFor(f, val, type, index) {
+            if(!motionData) return;
+            if(type === 'joint') {
+                motionData.joint_pos[f][index] = val;
+            } else if(type === 'pos') {
+                motionData.base_pos_w[f][index] = val;
+            } else if(type === 'rot') {
+                const qRaw = motionData.base_quat_w[f];
+                const q = new THREE.Quaternion(qRaw[1], qRaw[2], qRaw[3], qRaw[0]);
+                const e = new THREE.Euler().setFromQuaternion(q, 'XYZ');
+                if(index === 0) e.x = val;
+                if(index === 1) e.y = val;
+                if(index === 2) e.z = val;
+                q.setFromEuler(e);
+                motionData.base_quat_w[f] = [q.w, q.x, q.y, q.z];
+            }
+        }
+
+        function setChannelValue(f, val) {
+            clearSmoothPreview();
+            setChannelValueFor(f, val, activeType, activeIndex);
+        }
+
+        function drawCurve() {
+            if(!motionData || activeIndex === -1) return;
+            ctx.clearRect(0, 0, editorWidth, editorHeight);
+            
+            const count = motionData.num_frames;
+            const vals = []; 
+            for(let i=0; i<count; i++) vals.push(getChannelValue(i)); // Slow but safe generic access
+            
+            // Scale
+            let minVal = -3.15, maxVal = 3.15;
+            if(activeType === 'pos') { minVal = -1.0; maxVal = 1.0; }
+            let dataMin = Infinity, dataMax = -Infinity;
+            for(const value of vals) {
+                dataMin = Math.min(dataMin, value);
+                dataMax = Math.max(dataMax, value);
+            }
+            if(dataMin < minVal) minVal = dataMin - 0.1;
+            if(dataMax > maxVal) maxVal = dataMax + 0.1;
+            if(curveValueRange) {
+                minVal = curveValueRange.min;
+                maxVal = curveValueRange.max;
+            }
+
+            const valRange = maxVal - minVal;
+            const drawH = editorHeight - PAD_TOP - PAD_BOTTOM;
+            const drawW = editorWidth - PAD_LEFT - PAD_RIGHT;
+            const stepX = drawW / Math.max(1, count - 1);
+            const getX = (i) => PAD_LEFT + i * stepX;
+            const getY = (v) => PAD_TOP + drawH - ((v - minVal) / valRange * drawH);
+
+            // Keep enlarged curves inside the plot, away from the controls.
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(PAD_LEFT, PAD_TOP, drawW, drawH);
+            ctx.clip();
+
+            if(curveRangeActive()) {
+                ctx.fillStyle = 'rgba(0, 170, 190, 0.12)';
+                ctx.fillRect(getX(baseHeightStart), PAD_TOP, getX(baseHeightEnd)-getX(baseHeightStart), drawH);
+            }
+
+            // Grid
+            const yZero = getY(0);
+            ctx.beginPath(); ctx.strokeStyle = "#ddd"; ctx.lineWidth = 1;
+            if(yZero > PAD_TOP && yZero < (editorHeight - PAD_BOTTOM)) {
+                ctx.moveTo(PAD_LEFT, yZero); ctx.lineTo(editorWidth - PAD_RIGHT, yZero); ctx.stroke();
+            }
+
+            // Trim preview shading: shaded parts will be removed by Apply Trim.
+            if(trimStart > 0 || trimEnd < count - 1) {
+                ctx.fillStyle = "rgba(220, 53, 69, 0.12)";
+                if(trimStart > 0) {
+                    ctx.fillRect(PAD_LEFT, PAD_TOP, getX(trimStart) - PAD_LEFT, drawH);
+                }
+                if(trimEnd < count - 1) {
+                    const trimEndBoundary = getX(Math.min(trimEnd + 1, count - 1));
+                    ctx.fillRect(trimEndBoundary, PAD_TOP, (editorWidth - PAD_RIGHT) - trimEndBoundary, drawH);
+                }
+            }
+
+            ctx.fillStyle = 'rgba(40, 167, 69, 0.15)';
+            for(const [start, end] of smoothProtectedRanges) {
+                ctx.fillRect(getX(start) - stepX / 2, PAD_TOP, (end - start + 1) * stepX, drawH);
+            }
+
+            // Curve
+            ctx.beginPath(); ctx.strokeStyle = "#007bff"; ctx.lineWidth = 2;
+            ctx.moveTo(getX(0), getY(vals[0]));
+            for(let i=1; i<count; i++) ctx.lineTo(getX(i), getY(vals[i]));
+            ctx.stroke();
+
+            if(smoothPreview) {
+                ctx.beginPath(); ctx.strokeStyle = '#f08000'; ctx.lineWidth = 2;
+                ctx.moveTo(getX(0), getY(smoothPreview[0]));
+                for(let i=1; i<count; i++) ctx.lineTo(getX(i), getY(smoothPreview[i]));
+                ctx.stroke();
+            }
+
+            // Marker (Current Frame)
+            const xCurrent = getX(currentFrame);
+            ctx.beginPath(); ctx.strokeStyle = "rgba(0,0,0,0.5)"; ctx.setLineDash([5, 5]);
+            ctx.moveTo(xCurrent, PAD_TOP); ctx.lineTo(xCurrent, editorHeight - PAD_BOTTOM);
+            ctx.stroke(); ctx.setLineDash([]);
+
+            // Points
+            for(let i=0; i<count; i++) {
+                const cx = getX(i); const cy = getY(vals[i]);
+                ctx.beginPath();
+                if(i === currentFrame || i === hoverIndex) {
+                    ctx.fillStyle = (i===currentFrame) ? "#ff0000" : "#ffcc00"; // Highlight current frame distinctly
+                    ctx.arc(cx, cy, 5, 0, Math.PI*2); 
+                } else {
+                    ctx.fillStyle = "#007bff"; ctx.arc(cx, cy, 2.5, 0, Math.PI*2); 
+                }
+                ctx.fill();
+            }
+            if(curveRangeActive()) {
+                ctx.strokeStyle = '#00aabe'; ctx.fillStyle = '#008c9e'; ctx.lineWidth = 3;
+                ctx.font = '12px sans-serif';
+                for(const [frame, label, right] of [[baseHeightStart, '起点', false], [baseHeightEnd, '终点', true]]) {
+                    const x = getX(frame);
+                    ctx.beginPath(); ctx.moveTo(x, PAD_TOP); ctx.lineTo(x, PAD_TOP+drawH); ctx.stroke();
+                    ctx.fillRect(x-6, PAD_TOP+16, 12, 18);
+                    ctx.textAlign = right ? 'right' : 'left';
+                    ctx.fillText(`${label} ${frame}`, x+(right ? -9 : 9), PAD_TOP+29);
+                }
+                ctx.textAlign = 'left';
+            }
+            ctx.restore();
+            ctx.fillStyle = '#666';
+            ctx.font = '11px sans-serif';
+            ctx.fillText(maxVal.toFixed(4), PAD_LEFT + 4, PAD_TOP + 12);
+            ctx.fillText(minVal.toFixed(4), PAD_LEFT + 4, PAD_TOP + drawH - 4);
+            canvas.scaleInfo = { minVal, valRange, drawH, stepX, getX, getY };
+        }
+
+        function curveRangeActive() {
+            return motionData?.num_frames >= 3 && activeIndex !== -1 &&
+                document.getElementById('baseHeightRangeEnabled').checked;
+        }
+
+        function refreshBaseHeightRange(reset=false) {
+            const last = Math.max(0, (motionData?.num_frames || 1)-1);
+            if(reset) { baseHeightStart = 0; baseHeightEnd = last; }
+            baseHeightStart = Math.max(0, Math.min(baseHeightStart, last-2));
+            baseHeightEnd = Math.min(last, Math.max(baseHeightStart+2, baseHeightEnd));
+            document.getElementById('baseHeightRangeLabel').innerText = last >= 2
+                ? `${baseHeightStart}–${baseHeightEnd} 帧（两端固定）` : '至少需要 3 帧';
+        }
+
+        function detectStandingIntervals(data, options={}) {
+            const count = data?.num_frames;
+            const fps = Number(data?.framerate);
+            if(!Number.isInteger(count) || count < 3) throw new Error('动作至少需要 3 帧。');
+            if(!Number.isFinite(fps) || fps <= 0) throw new Error('动作帧率必须是正数。');
+            if(!Array.isArray(data.base_pos_w) || data.base_pos_w.length !== count) {
+                throw new Error('动作缺少完整的 Base 位置轨迹。');
+            }
+
+            const minSeconds = Number(options.minSeconds ?? 3);
+            const maxHorizontalSpeed = Number(options.maxHorizontalSpeed ?? 0.08);
+            const maxHeightSpeed = Number(options.maxHeightSpeed ?? 0.02);
+            if(!Number.isFinite(minSeconds) || minSeconds < 0) throw new Error('最短站立时间必须是非负数。');
+            if(!Number.isFinite(maxHorizontalSpeed) || maxHorizontalSpeed < 0) throw new Error('Base XY 速度阈值必须是非负数。');
+            if(!Number.isFinite(maxHeightSpeed) || maxHeightSpeed < 0) throw new Error('Base Z 速度阈值必须是非负数。');
+            const minFrames = Math.max(3, Math.floor(minSeconds*fps)+1);
+            const radius = Math.max(1, Math.round(fps*0.05));
+            const stable = new Array(count).fill(false);
+
+            for(let frame=0; frame<count; frame++) {
+                const before = Math.max(0, frame-radius);
+                const after = Math.min(count-1, frame+radius);
+                const dt = (after-before)/fps;
+                const p0 = data.base_pos_w[before], p1 = data.base_pos_w[after];
+                if(!Array.isArray(p0) || !Array.isArray(p1) || p0.length < 3 || p1.length < 3 || !(dt > 0)) continue;
+                if(![p0[0], p0[1], p0[2], p1[0], p1[1], p1[2]].every(Number.isFinite)) continue;
+                const horizontalSpeed = Math.hypot(p1[0]-p0[0], p1[1]-p0[1])/dt;
+                const heightSpeed = Math.abs(p1[2]-p0[2])/dt;
+                stable[frame] = horizontalSpeed <= maxHorizontalSpeed && heightSpeed <= maxHeightSpeed;
+            }
+
+            const intervals = [];
+            for(let start=0; start<count;) {
+                if(!stable[start]) { start++; continue; }
+                let end = start;
+                while(end+1<count && stable[end+1]) end++;
+                if(end-start+1 >= minFrames) {
+                    intervals.push({start, end, frames: end-start+1});
+                }
+                start = end+1;
+            }
+            return {intervals, fps, minSeconds, maxHorizontalSpeed, maxHeightSpeed};
+        }
+
+        function updateStandingNavigation() {
+            document.getElementById('previousStandingRange').disabled = standingIntervalIndex <= 0;
+            document.getElementById('nextStandingRange').disabled =
+                standingIntervalIndex < 0 || standingIntervalIndex >= standingIntervals.length-1;
+        }
+
+        function selectStandingInterval(index) {
+            if(index < 0 || index >= standingIntervals.length || !motionData) return;
+            standingIntervalIndex = index;
+            const selected = standingIntervals[index];
+            baseHeightStart = selected.start;
+            baseHeightEnd = selected.end;
+            document.getElementById('baseHeightRangeEnabled').checked = true;
+            refreshBaseHeightRange();
+            updateMotionFrame(Math.round((selected.start+selected.end)/2));
+            drawCurve();
+            updateStandingNavigation();
+            document.getElementById('standingDetectionStatus').innerText =
+                `区间 ${index+1}/${standingIntervals.length}：${selected.start}–${selected.end}，` +
+                `${selected.frames} 帧（${(selected.frames/Number(motionData.framerate)).toFixed(2)} 秒）。`;
+        }
+
+        document.getElementById('autoSelectStandingRange').addEventListener('click', () => {
+            const status = document.getElementById('standingDetectionStatus');
+            try {
+                if(!motionData) throw new Error('请先加载动作。');
+                finishCurveDrag();
+                const result = detectStandingIntervals(motionData, {
+                    minSeconds: document.getElementById('standingMinSeconds').valueAsNumber,
+                    maxHorizontalSpeed: document.getElementById('standingMaxHorizontalSpeed').valueAsNumber,
+                    maxHeightSpeed: document.getElementById('standingMaxHeightSpeed').valueAsNumber,
+                });
+                standingIntervals = result.intervals;
+                standingIntervalIndex = -1;
+                updateStandingNavigation();
+                if(!standingIntervals.length) throw new Error(`未找到 Base 保持静止超过 ${result.minSeconds} 秒的区间。`);
+                selectStandingInterval(0);
+            } catch(error) {
+                standingIntervals = [];
+                standingIntervalIndex = -1;
+                updateStandingNavigation();
+                status.innerText = `未选择：${error.message}`;
+            }
+        });
+        document.getElementById('previousStandingRange').addEventListener('click', () => {
+            selectStandingInterval(standingIntervalIndex-1);
+        });
+        document.getElementById('nextStandingRange').addEventListener('click', () => {
+            selectStandingInterval(standingIntervalIndex+1);
+        });
+        for(const id of ['standingMinSeconds', 'standingMaxHorizontalSpeed', 'standingMaxHeightSpeed']) {
+            document.getElementById(id).addEventListener('input', () => {
+                standingIntervals = [];
+                standingIntervalIndex = -1;
+                updateStandingNavigation();
+                document.getElementById('standingDetectionStatus').innerText = '参数已修改，请重新检测。';
+            });
+        }
+
+        // Add a C2-continuous displacement envelope to the existing trajectory.
+        // Both endpoints stay exact; the dragged frame receives the full delta.
+        function smoothRangeDisplacement(raw, start, end, anchor, delta) {
+            if(!Number.isFinite(delta) || ![start, end, anchor].every(Number.isInteger) ||
+               start < 0 || end >= raw.length || !(start < anchor && anchor < end)) {
+                throw new Error('曲线拖动范围或位移无效。');
+            }
+            const result = raw.slice();
+            const smootherstep = t => t*t*t*(t*(t*6-15)+10);
+            for(let i=start+1; i<end; i++) {
+                const t = i <= anchor ? (i-start)/(anchor-start) : (end-i)/(end-anchor);
+                result[i] = raw[i] + delta*smootherstep(t);
+                if(!Number.isFinite(result[i])) throw new Error('曲线结果包含无效数值。');
+            }
+            return result;
+        }
+
+        document.getElementById('baseHeightRangeEnabled').addEventListener('change', event => {
+            finishCurveDrag();
+            if(event.target.checked) {
+                if(!motionData || motionData.num_frames < 3) {
+                    event.target.checked = false;
+                    return alert('请先加载至少 3 帧的动作。');
+                }
+                refreshBaseHeightRange();
+            }
+            drawCurve();
+        });
+        document.getElementById('resetBaseHeightRange').addEventListener('click', () => {
+            finishCurveDrag(); refreshBaseHeightRange(true); drawCurve();
+        });
+
+        // --- MOUSE STUFF ---
+        function getMousePos(e) {
+            const rect = canvas.getBoundingClientRect();
+            return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        }
+        canvas.addEventListener('wheel', (e) => {
+            if(!motionData || activeIndex === -1 || !canvas.scaleInfo) return;
+            e.preventDefault();
+            e.stopPropagation();
+            if(isDragging || baseHeightBoundaryDrag || baseHeightCurveDrag || e.deltaY === 0) return;
+            const info = canvas.scaleInfo;
+            if(info.drawH <= 0) return;
+            const mouse = getMousePos(e);
+            // Preserve the value under the cursor while changing vertical scale.
+            const fraction = Math.max(0, Math.min(1, (PAD_TOP + info.drawH - mouse.y) / info.drawH));
+            const anchor = info.minVal + fraction * info.valRange;
+            const delta = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? info.drawH : 1);
+            const range = Math.max(0.0001, Math.min(10000,
+                info.valRange * Math.exp(Math.max(-1, Math.min(1, delta * 0.002)))));
+            curveValueRange = { min: anchor - fraction * range, max: anchor + (1 - fraction) * range };
+            hoverIndex = -1;
+            drawCurve();
+        }, { passive: false });
+
+        document.getElementById('resetCurveZoomBtn').addEventListener('click', () => {
+            curveValueRange = null;
+            drawCurve();
+        });
+
+        canvas.addEventListener('mousedown', (e) => {
+            if(!motionData || !canvas.scaleInfo || e.button !== 0) return;
+            const m = getMousePos(e);
+            const info = canvas.scaleInfo;
+            const estIndex = Math.round((m.x - PAD_LEFT) / info.stepX);
+
+            if(curveRangeActive()) {
+                if(m.y < PAD_TOP || m.y > PAD_TOP+info.drawH) return;
+                const nearStart = Math.abs(m.x-info.getX(baseHeightStart));
+                const nearEnd = Math.abs(m.x-info.getX(baseHeightEnd));
+                if(Math.min(nearStart, nearEnd) <= 10) {
+                    baseHeightBoundaryDrag = nearStart <= nearEnd ? 'start' : 'end';
+                    e.preventDefault(); return;
+                }
+                if(estIndex >= 0 && estIndex < motionData.num_frames) {
+                    updateMotionFrame(estIndex);
+                    if(estIndex > baseHeightStart && estIndex < baseHeightEnd &&
+                       Math.abs(m.y-info.getY(getChannelValue(estIndex))) < 30) {
+                        const channelType = activeType;
+                        const channelIndex = activeIndex;
+                        const channelName = document.getElementById('activeJointName').innerText;
+                        const raw = Array.from({length: motionData.num_frames}, (_, i) =>
+                            getChannelValueFor(i, channelType, channelIndex));
+                        if(!raw.every(Number.isFinite)) return;
+                        baseHeightCurveDrag = {raw, anchor: estIndex, start: baseHeightStart, end: baseHeightEnd,
+                            initialY: m.y, unitsPerPixel: info.valRange/info.drawH, undoPushed: false,
+                            channelType, channelIndex, channelName};
+                        // Freeze the value axis throughout this drag.
+                        curveValueRange = {min: info.minVal, max: info.minVal+info.valRange};
+                    }
+                    drawCurve();
+                }
+                e.preventDefault(); return;
+            }
+            
+            if(estIndex >= 0 && estIndex < motionData.num_frames) {
+                const val = getChannelValue(estIndex);
+                const py = info.getY(val);
+                // Allow clicking anywhere in column to jump to frame, but only circle to drag
+                updateMotionFrame(estIndex);
+                dragIndex = estIndex;
+                if(Math.abs(m.y - py) < 30) {
+                    pushUndoState(`edit ${document.getElementById('activeJointName').innerText}`);
+                    isDragging = true;
+                }
+                drawCurve();
+            }
+        });
+        canvas.addEventListener('mousemove', (e) => {
+            if(!motionData || !canvas.scaleInfo) return;
+            const m = getMousePos(e);
+            const info = canvas.scaleInfo;
+
+            if(baseHeightBoundaryDrag) {
+                const frame = clampFrameIndex(Math.round((m.x-PAD_LEFT)/info.stepX));
+                if(baseHeightBoundaryDrag === 'start') baseHeightStart = Math.min(frame, baseHeightEnd-2);
+                else baseHeightEnd = Math.max(frame, baseHeightStart+2);
+                refreshBaseHeightRange();
+                canvas.style.cursor = 'ew-resize'; drawCurve(); return;
+            }
+            if(baseHeightCurveDrag) {
+                const drag = baseHeightCurveDrag;
+                const delta = (drag.initialY-m.y)*drag.unitsPerPixel;
+                const values = smoothRangeDisplacement(drag.raw, drag.start, drag.end, drag.anchor, delta);
+                if(!drag.undoPushed && Math.abs(delta) > 1e-12) {
+                    clearSmoothPreview();
+                    pushUndoState(`smooth ${drag.channelName} range drag`); drag.undoPushed = true;
+                }
+                if(drag.undoPushed) {
+                    for(let i=drag.start+1; i<drag.end; i++) {
+                        setChannelValueFor(i, values[i], drag.channelType, drag.channelIndex);
+                    }
+                }
+                canvas.style.cursor = 'ns-resize';
+                updateMotionFrame(drag.anchor); drawCurve(); return;
+            }
+            if(curveRangeActive()) {
+                const nearBoundary = Math.min(Math.abs(m.x-info.getX(baseHeightStart)), Math.abs(m.x-info.getX(baseHeightEnd))) <= 10;
+                canvas.style.cursor = nearBoundary ? 'ew-resize' : 'default';
+                hoverIndex = -1;
+                const frame = Math.round((m.x-PAD_LEFT)/info.stepX);
+                if(!nearBoundary && frame > baseHeightStart && frame < baseHeightEnd && Math.abs(m.y-info.getY(getChannelValue(frame))) < 30) {
+                    hoverIndex = frame; canvas.style.cursor = 'ns-resize';
+                }
+                drawCurve(); return;
+            }
+            
+            if(isDragging && dragIndex !== -1) {
+                let newVal = ((PAD_TOP + info.drawH - m.y) / info.drawH) * info.valRange + info.minVal;
+                setChannelValue(dragIndex, newVal);
+                document.getElementById('valDisplay').innerText = newVal.toFixed(3);
+                updateMotionFrame(dragIndex);
+                drawCurve();
+                return;
+            }
+
+            const estIndex = Math.round((m.x - PAD_LEFT) / info.stepX);
+            if(estIndex >= 0 && estIndex < motionData.num_frames) {
+                const val = getChannelValue(estIndex);
+                const py = info.getY(val);
+                if(Math.abs(m.y - py) < 30) {
+                    hoverIndex = estIndex; canvas.style.cursor = 'pointer';
+                    document.getElementById('valDisplay').innerText = val.toFixed(3);
+                } else {
+                    hoverIndex = -1; canvas.style.cursor = 'default';
+                }
+            }
+            drawCurve(); 
+        });
+        function finishCurveDrag() {
+            isDragging = false; dragIndex = -1;
+            baseHeightBoundaryDrag = null; baseHeightCurveDrag = null;
+            drawCurve();
+        }
+        canvas.addEventListener('mouseup', finishCurveDrag);
+        canvas.addEventListener('mouseleave', finishCurveDrag);
+        window.addEventListener('mouseup', finishCurveDrag);
+        window.addEventListener('blur', finishCurveDrag);
+
+        // =========================================================
+        //  3D SCENE & APP STATE
+        // =========================================================
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x2d2d2d);
+
+        // Opaque ground at world Z=0. Unlike a GridHelper by itself, this plane
+        // writes to the depth buffer, so robot geometry below ground is occluded.
+        const ground = new THREE.Mesh(
+            new THREE.PlaneGeometry(50, 50),
+            new THREE.MeshStandardMaterial({
+                color: 0x3b3f43,
+                roughness: 1.0,
+                metalness: 0.0,
+                side: THREE.DoubleSide
+            })
+        );
+        ground.position.z = 0;
+        ground.receiveShadow = true;
+        scene.add(ground);
+
+        // Keep the grid just above the plane to avoid z-fighting.
+        const groundGrid = new THREE.GridHelper(50, 50, 0x888888, 0x555555);
+        groundGrid.rotateX(Math.PI / 2);
+        groundGrid.position.z = 0.001;
+        scene.add(groundGrid);
+        scene.add(new THREE.AxesHelper(2));
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.01, 1000);
+        camera.position.set(3, -3, 3);
+        camera.up.set(0, 0, 1);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        scene.add(new THREE.DirectionalLight(0xffffff, 1.5).translateZ(10));
+        scene.add(new THREE.AmbientLight(0x606060));
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true; 
+        // Keep wheel zoom fine-grained so one notch cannot throw the robot out of view.
+        controls.zoomSpeed = 0.1;
+        controls.minDistance = 0.5;
+        controls.maxDistance = 30;
+
+        function update3DViewport() {
+            const plotHeight = document.getElementById('curveEditor').clientHeight;
+            const height = Math.max(1, window.innerHeight - plotHeight);
+            renderer.setSize(window.innerWidth, height);
+            camera.aspect = window.innerWidth / height;
+            camera.updateProjectionMatrix();
+        }
+
+        function focusRobot() {
+            if(!robot) return;
+            update3DViewport();
+            robot.updateMatrixWorld(true);
+            const bounds = new THREE.Box3().setFromObject(robot);
+            const center = robot.position.clone().add(new THREE.Vector3(0, 0, 0.5));
+            let radius = 1;
+            if(!bounds.isEmpty()) {
+                const sphere = bounds.getBoundingSphere(new THREE.Sphere());
+                if(Number.isFinite(sphere.radius) && sphere.radius > 0) {
+                    center.copy(sphere.center);
+                    radius = Math.max(0.2, sphere.radius);
+                }
+            }
+            const verticalFov = THREE.MathUtils.degToRad(camera.fov) / 2;
+            const horizontalFov = Math.atan(Math.tan(verticalFov) * camera.aspect);
+            const distance = radius / Math.sin(Math.min(verticalFov, horizontalFov)) * 1.3;
+            // Flush pending orbit/pan damping before assigning the recovered view.
+            controls.enableDamping = false;
+            controls.update();
+            controls.target.copy(center);
+            camera.position.copy(center).addScaledVector(new THREE.Vector3(3, -4, 2).normalize(), distance);
+            controls.minDistance = Math.max(0.2, radius * 0.6);
+            controls.maxDistance = Math.max(20, distance * 8);
+            camera.near = Math.max(0.001, radius / 1000);
+            camera.far = Math.max(1000, controls.maxDistance * 4);
+            camera.updateProjectionMatrix();
+            controls.update();
+            controls.enableDamping = true;
+        }
+
+        document.getElementById('focusRobotBtn').addEventListener('click', focusRobot);
+        document.getElementById('followRobotCamera').addEventListener('change', (e) => {
+            if(e.target.checked) focusRobot();
+        });
+
+        let robot = null;
+        let robotMeshesReady = false;
+        let groundLiftBusy = false;
+        let motionData = null;
+        let currentFrame = 0;
+        let activeIndex = -1; 
+        let activeType = 'joint';
+        let trimStart = 0;
+        let trimEnd = 0;
+        const undoStack = [];
+        const MAX_UNDO_STEPS = 30;
+        let keyEditUndoPushed = false;
+        const jointsMap = {};
+
+        // =========================================================
+        //  UNDO SUPPORT
+        // =========================================================
+        function deepCloneMotionData(data) {
+            if(!data) return null;
+            return JSON.parse(JSON.stringify(data));
+        }
+
+        function refreshUndoButton() {
+            const btn = document.getElementById('undoBtn');
+            if(!btn) return;
+            btn.disabled = undoStack.length === 0;
+            btn.innerText = undoStack.length ? `Undo Last Step (${undoStack.length})` : 'Undo Last Step (Ctrl+Z)';
+        }
+
+        function pushUndoState(label='edit') {
+            clearSmoothPreview();
+            if(!motionData) return;
+            undoStack.push({
+                label,
+                motionData: deepCloneMotionData(motionData),
+                currentFrame,
+                activeIndex,
+                activeType,
+                trimStart,
+                trimEnd,
+                baseHeightStart,
+                baseHeightEnd,
+                statusText: document.getElementById('statusMsg').innerText,
+            });
+            if(undoStack.length > MAX_UNDO_STEPS) undoStack.shift();
+            refreshUndoButton();
+        }
+
+        function undoLastStep() {
+            if(!undoStack.length) return;
+            finishCurveDrag();
+            const state = undoStack.pop();
+            motionData = deepCloneMotionData(state.motionData);
+            resetSelectiveSmooth();
+            activeIndex = state.activeIndex;
+            activeType = state.activeType;
+            trimStart = state.trimStart;
+            trimEnd = state.trimEnd;
+            baseHeightStart = state.baseHeightStart;
+            baseHeightEnd = state.baseHeightEnd;
+            currentFrame = Math.max(0, Math.min(state.currentFrame, motionData.num_frames - 1));
+            slider.max = motionData.num_frames - 1;
+            slider.value = currentFrame;
+            document.getElementById('statusMsg').innerText = state.statusText || `${motionData.num_frames} frames`;
+            updateTrimUI();
+            updateMotionFrame(currentFrame);
+            resizeEditor();
+            drawCurve();
+            refreshUndoButton();
+        }
+
+        // =========================================================
+        //  KEYBOARD CONTROLS (NEW)
+        // =========================================================
+        const keyStates = { up: false, down: false };
+
+        window.addEventListener('keydown', (e) => {
+            if(groundLiftBusy) return;
+            if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+                undoLastStep();
+                e.preventDefault();
+                return;
+            }
+            if(baseHeightBoundaryDrag || baseHeightCurveDrag) return;
+            // Let form fields handle arrow keys without editing the motion curve.
+            if(e.target.matches('input, textarea, select') || e.target.isContentEditable) return;
+            if(!motionData) return;
+
+            // 1. LEFT / RIGHT (Single Step)
+            // "!e.repeat" ensures holding the key doesn't trigger rapid fire.
+            if (e.key === 'ArrowLeft') {
+                if(!e.repeat) {
+                    let f = currentFrame - 1;
+                    if (f < 0) f = 0;
+                    updateMotionFrame(f);
+                    drawCurve();
+                }
+                e.preventDefault();
+            }
+            if (e.key === 'ArrowRight') {
+                if(!e.repeat) {
+                    let f = currentFrame + 1;
+                    if (f >= motionData.num_frames) f = motionData.num_frames - 1;
+                    updateMotionFrame(f);
+                    drawCurve();
+                }
+                e.preventDefault();
+            }
+
+            // 2. UP / DOWN (State tracking for Continuous Loop)
+            // Push only one undo snapshot for one continuous key-hold edit.
+            if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                if(activeIndex !== -1 && !keyEditUndoPushed) {
+                    pushUndoState(`keyboard edit ${document.getElementById('activeJointName').innerText}`);
+                    keyEditUndoPushed = true;
+                }
+            }
+            if (e.key === 'ArrowUp') { keyStates.up = true; e.preventDefault(); }
+            if (e.key === 'ArrowDown') { keyStates.down = true; e.preventDefault(); }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.key === 'ArrowUp') keyStates.up = false;
+            if (e.key === 'ArrowDown') keyStates.down = false;
+            if(!keyStates.up && !keyStates.down) keyEditUndoPushed = false;
+        });
+
+        // =========================================================
+        //  MAIN LOOP
+        // =========================================================
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+
+            // CONTINUOUS EDITING (Up/Down Holding)
+            if (motionData && activeIndex !== -1) {
+                let changed = false;
+                // Step size depends on what we are editing
+                const step = (activeType === 'pos') ? 0.002 : 0.01; // Meters vs Radians
+                
+                if(keyStates.up) {
+                    let v = getChannelValue(currentFrame);
+                    setChannelValue(currentFrame, v + step);
+                    changed = true;
+                }
+                if(keyStates.down) {
+                    let v = getChannelValue(currentFrame);
+                    setChannelValue(currentFrame, v - step);
+                    changed = true;
+                }
+
+                if(changed) {
+                    // Update UI text
+                    const vInit = getChannelValue(currentFrame);
+                    document.getElementById('valDisplay').innerText = vInit.toFixed(3);
+                    
+                    updateMotionFrame(currentFrame);
+                    drawCurve(); // Re-render UI immediately
+                }
+            }
+        }
+        animate();
+
+        // =========================================================
+        //  UI HANDLERS
+        // =========================================================
+        const slider = document.getElementById('timelineSlider');
+        slider.addEventListener('input', (e) => {
+            updateMotionFrame(parseInt(e.target.value));
+            drawCurve();
+        });
+
+        document.getElementById('loadUrdfBtn').addEventListener('click', () => {
+            const name = document.getElementById('urdfName').value.trim();
+            if(!name) return alert("Enter filename");
+            robotMeshesReady = false;
+            let loadedRobot = null;
+            let assetFailed = false;
+            const manager = new THREE.LoadingManager();
+            manager.onError = () => { assetFailed = true; };
+            manager.onLoad = () => {
+                if(robot === loadedRobot) robotMeshesReady = !assetFailed;
+            };
+            new URDFLoader(manager).load(`/static/${name}`, r => {
+                if(robot) scene.remove(robot);
+                robot = r; loadedRobot = r; scene.add(robot);
+                for(const k of Object.keys(jointsMap)) delete jointsMap[k];
+                for(let k in robot.joints) jointsMap[k] = robot.joints[k];
+                if(motionData) updateMotionFrame(currentFrame);
+                focusRobot();
+                document.getElementById('loadUrdfBtn').innerText = "模型已加载";
+            }, undefined, () => {
+                alert('URDF 加载失败，请检查模型目录和文件名。');
+            });
+        });
+
+        document.getElementById('npzInput').addEventListener('change', async (e) => {
+            if(!e.target.files.length) return;
+            const fd = new FormData(); fd.append('file', e.target.files[0]);
+            try {
+                const res = await fetch('/upload_motion', { method:'POST', body:fd });
+                const data = await res.json();
+                if(data.error) throw new Error(data.error);
+                
+                motionData = data;
+                finishCurveDrag();
+                refreshBaseHeightRange(true);
+                document.getElementById('baseHeightRangeEnabled').checked = false;
+                standingIntervals = [];
+                standingIntervalIndex = -1;
+                updateStandingNavigation();
+                document.getElementById('standingDetectionStatus').innerText = '';
+                resetSelectiveSmooth();
+                curveValueRange = null;
+                undoStack.length = 0;
+                refreshUndoButton();
+                document.getElementById('statusMsg').innerText = `${data.num_frames} frames`;
+                document.getElementById('curveEditor').style.display = 'block';
+                
+                slider.max = data.num_frames - 1;
+                slider.value = 0;
+                trimStart = 0;
+                trimEnd = data.num_frames - 1;
+                updateTrimUI();
+
+                // Populate Sidebar
+                const list = document.getElementById('jointListContainer');
+                list.innerHTML = '';
+                const addHeader = (t) => { const d=document.createElement('div'); d.className='section-label'; d.innerText=t; list.appendChild(d); };
+                const addItem = (n, t, i, s=false) => {
+                    const div = document.createElement('div'); div.className = 'joint-item' + (s?' special':''); div.innerText = n;
+                    div.onclick = () => selectChannel(t, i, n, div);
+                    list.appendChild(div);
+                };
+
+                addHeader("Base Position");
+                addItem("Base X",'pos',0,true); addItem("Base Y",'pos',1,true); addItem("Base Z",'pos',2,true);
+                addHeader("Base Rotation");
+                addItem("Roll",'rot',0,true); addItem("Pitch",'rot',1,true); addItem("Yaw",'rot',2,true);
+                addHeader("Joints");
+                data.joint_names.forEach((n, i) => addItem(n, 'joint', i));
+
+                // Default Select
+                if(data.joint_names.length) selectChannel('joint', 0, data.joint_names[0], list.querySelectorAll('.joint-item')[6]);
+                
+                updateMotionFrame(0);
+                focusRobot();
+                setTimeout(resizeEditor, 50);
+
+            } catch(err) { alert(err.message); }
+        });
+
+        function selectChannel(type, idx, name, el) {
+            finishCurveDrag();
+            resetSelectiveSmooth();
+            curveValueRange = null;
+            document.querySelectorAll('.joint-item').forEach(x => x.classList.remove('active'));
+            el.classList.add('active');
+            document.getElementById('activeJointName').innerText = name;
+            const offsetJointName = document.getElementById('offsetJointName');
+            if(offsetJointName) offsetJointName.innerText = (type === 'joint') ? name : 'Select a joint';
+            activeType = type; activeIndex = idx;
+            drawCurve();
+        }
+
+        function clampFrameIndex(value) {
+            if(!motionData) return 0;
+            const maxFrame = motionData.num_frames - 1;
+            const v = Number.parseInt(value, 10);
+            if(Number.isNaN(v)) return 0;
+            return Math.max(0, Math.min(maxFrame, v));
+        }
+
+        function updateTrimUI() {
+            refreshBaseHeightRange();
+            if(!motionData) {
+                document.getElementById('trimRangeDisplay').innerText = "0 - 0";
+                document.getElementById('trimStartInput').value = 0;
+                document.getElementById('trimEndInput').value = 0;
+                return;
+            }
+            trimStart = clampFrameIndex(trimStart);
+            trimEnd = clampFrameIndex(trimEnd);
+            if(trimStart > trimEnd) {
+                const t = trimStart;
+                trimStart = trimEnd;
+                trimEnd = t;
+            }
+            document.getElementById('trimStartInput').max = motionData.num_frames - 1;
+            document.getElementById('trimEndInput').max = motionData.num_frames - 1;
+            document.getElementById('trimStartInput').value = trimStart;
+            document.getElementById('trimEndInput').value = trimEnd;
+            document.getElementById('trimRangeDisplay').innerText = `${trimStart} - ${trimEnd} / ${motionData.num_frames - 1}`;
+        }
+
+        function bindTrimNumberInput(inputId, isStart) {
+            const input = document.getElementById(inputId);
+            const applyValue = () => {
+                if(!motionData) return;
+                if(input.value === '') return;
+                const v = clampFrameIndex(input.value);
+                if(isStart) {
+                    trimStart = v;
+                    if(trimStart > trimEnd) trimEnd = trimStart;
+                } else {
+                    trimEnd = v;
+                    if(trimEnd < trimStart) trimStart = trimEnd;
+                }
+                updateTrimUI(); drawCurve();
+            };
+            input.addEventListener('input', applyValue);
+            input.addEventListener('change', applyValue);
+        }
+        bindTrimNumberInput('trimStartInput', true);
+        bindTrimNumberInput('trimEndInput', false);
+        document.getElementById('setTrimStartBtn').addEventListener('click', () => {
+            if(!motionData) return;
+            trimStart = currentFrame;
+            if(trimStart > trimEnd) trimEnd = trimStart;
+            updateTrimUI(); drawCurve();
+        });
+        document.getElementById('setTrimEndBtn').addEventListener('click', () => {
+            if(!motionData) return;
+            trimEnd = currentFrame;
+            if(trimEnd < trimStart) trimStart = trimEnd;
+            updateTrimUI(); drawCurve();
+        });
+        document.getElementById('resetTrimBtn').addEventListener('click', () => {
+            if(!motionData) return;
+            trimStart = 0;
+            trimEnd = motionData.num_frames - 1;
+            updateTrimUI(); drawCurve();
+        });
+        document.getElementById('applyTrimBtn').addEventListener('click', () => {
+            if(!motionData) return alert("No data");
+            updateTrimUI();
+            const oldCount = motionData.num_frames;
+            if(trimStart === 0 && trimEnd === oldCount - 1) return alert("Current range already keeps all frames.");
+            const keepCount = trimEnd - trimStart + 1;
+            if(keepCount <= 0) return alert("Invalid trim range");
+            pushUndoState(`trim ${trimStart}-${trimEnd}`);
+
+            // Trim any per-frame array whose first dimension equals num_frames.
+            // This keeps extra fields such as joint_vel, local_body_pos, etc. aligned if they exist.
+            const nonFrameKeys = new Set(['joint_names']);
+            Object.keys(motionData).forEach((key) => {
+                const value = motionData[key];
+                if(!nonFrameKeys.has(key) && Array.isArray(value) && value.length === oldCount) {
+                    motionData[key] = value.slice(trimStart, trimEnd + 1);
+                }
+            });
+            motionData.num_frames = keepCount;
+            refreshBaseHeightRange(true);
+            standingIntervals = [];
+            standingIntervalIndex = -1;
+            updateStandingNavigation();
+            document.getElementById('standingDetectionStatus').innerText = '';
+            resetSelectiveSmooth();
+            currentFrame = 0;
+            trimStart = 0;
+            trimEnd = keepCount - 1;
+            slider.max = keepCount - 1;
+            slider.value = 0;
+            document.getElementById('statusMsg').innerText = `${keepCount} frames (trimmed)`;
+            updateTrimUI();
+            updateMotionFrame(0);
+            resizeEditor();
+            drawCurve();
+        });
+
+        function clearSmoothPreview() {
+            smoothPreview = null;
+            document.getElementById('applySelectiveSmooth').disabled = true;
+            document.getElementById('smoothPreviewStatus').innerText = '';
+        }
+
+        function resetSelectiveSmooth() {
+            clearSmoothPreview();
+            smoothProtectedRanges = [];
+            document.getElementById('smoothProtectedFrames').innerText = '保护区间：无';
+            document.getElementById('smoothStart').value = 0;
+            document.getElementById('smoothEnd').value = Math.max(0, (motionData?.num_frames || 1) - 1);
+        }
+
+        // Symmetric binomial filter suppresses frame-alternating jitter. Protected
+        // regions split the signal into independent segments and remain exact.
+        function smoothSelectedValues(raw, start, end, windowSize, strength, fade, protectedRanges) {
+            const result = raw.slice();
+            const protectedMask = raw.map((_, i) => protectedRanges.some(([a, b]) => i >= a && i <= b));
+            const radius = (windowSize - 1) / 2;
+            const weights = [1];
+            for(let k=1; k<windowSize; k++) weights.push(weights[k-1] * (windowSize-k) / k);
+            let a = start;
+            while(a <= end) {
+                if(protectedMask[a]) { a++; continue; }
+                let b = a;
+                while(b < end && !protectedMask[b+1]) b++;
+                for(let i=a; i<=b; i++) {
+                    let sum = 0, total = 0;
+                    for(let k=-radius; k<=radius; k++) {
+                        const j = i+k;
+                        if(j < a || j > b) continue;
+                        const weight = weights[k+radius];
+                        sum += raw[j] * weight; total += weight;
+                    }
+                    const mix = strength * Math.min(1, (i-a)/fade, (b-i)/fade);
+                    result[i] = raw[i] + mix * (sum/total - raw[i]);
+                }
+                a = b + 1;
+            }
+            return result;
+        }
+
+        function smoothInteger(id, min, max) {
+            const value = document.getElementById(id).valueAsNumber;
+            if(!Number.isInteger(value) || value < min || value > max) throw new Error(`请输入 ${min}～${max} 范围内的整数 (${id})`);
+            return value;
+        }
+        document.getElementById('selectiveSmoothPanel').addEventListener('input', () => {
+            clearSmoothPreview(); drawCurve();
+        });
+        for(const [button, input] of [['smoothStartCurrent', 'smoothStart'], ['smoothEndCurrent', 'smoothEnd']]) {
+            document.getElementById(button).addEventListener('click', () => {
+                if(!motionData) return;
+                document.getElementById(input).value = currentFrame;
+                clearSmoothPreview(); drawCurve();
+            });
+        }
+        document.getElementById('protectSmoothFrame').addEventListener('click', () => {
+            if(!motionData || activeIndex === -1) return alert('请先加载动作并选择通道。');
+            try {
+                const radius = smoothInteger('smoothProtectRadius', 0, motionData.num_frames);
+                smoothProtectedRanges.push([Math.max(0, currentFrame-radius), Math.min(motionData.num_frames-1, currentFrame+radius)]);
+                document.getElementById('smoothProtectedFrames').innerText = '保护区间：' + smoothProtectedRanges.map(([a,b]) => `${a}–${b}`).join(', ');
+                clearSmoothPreview(); drawCurve();
+            } catch(error) { alert(error.message); }
+        });
+        document.getElementById('clearSmoothProtection').addEventListener('click', () => {
+            smoothProtectedRanges = [];
+            document.getElementById('smoothProtectedFrames').innerText = '保护区间：无';
+            clearSmoothPreview(); drawCurve();
+        });
+        document.getElementById('previewSelectiveSmooth').addEventListener('click', () => {
+            clearSmoothPreview();
+            if(!motionData || activeIndex === -1) return alert('请先加载动作并选择通道。');
+            try {
+                const start = smoothInteger('smoothStart', 0, motionData.num_frames-1);
+                const end = smoothInteger('smoothEnd', start, motionData.num_frames-1);
+                const windowSize = smoothInteger('smoothWindow', 3, 21);
+                if(windowSize % 2 === 0) throw new Error('窗口必须为奇数，例如 3、5、7。');
+                const strength = smoothInteger('smoothStrength', 1, 100) / 100;
+                const fade = smoothInteger('smoothFade', 1, 100);
+                const raw = Array.from({length: motionData.num_frames}, (_, i) => getChannelValue(i));
+                if(!raw.every(Number.isFinite)) throw new Error('通道包含无效数值，无法平滑。');
+                smoothPreview = smoothSelectedValues(raw, start, end, windowSize, strength, fade, smoothProtectedRanges);
+                const changed = raw.some((v,i) => v !== smoothPreview[i]);
+                document.getElementById('applySelectiveSmooth').disabled = !changed;
+                document.getElementById('smoothPreviewStatus').innerText = changed ? '橙线预览已生成，点击应用后才会修改数据。' : '没有可修改的数据；请扩大区间或减少保护范围。';
+            } catch(error) { alert(error.message); }
+            drawCurve();
+        });
+        document.getElementById('cancelSelectiveSmooth').addEventListener('click', () => {
+            clearSmoothPreview(); drawCurve();
+        });
+        document.getElementById('applySelectiveSmooth').addEventListener('click', () => {
+            if(!smoothPreview || !motionData) return;
+            const values = smoothPreview;
+            pushUndoState('selective smoothing');
+            for(let i=0; i<values.length; i++) {
+                // Skip untouched frames, including protected rotations: avoid even
+                // a quaternion round trip for values the user chose to preserve.
+                if(values[i] !== getChannelValue(i)) setChannelValue(i, values[i]);
+            }
+            document.getElementById('statusMsg').innerText = `${motionData.num_frames} frames | 局部去抖已应用`;
+            updateMotionFrame(currentFrame); drawCurve();
+        });
+
+        function solveLinearSystem(matrix, vector) {
+            const n = vector.length;
+            const augmented = matrix.map((row, i) => row.slice().concat(vector[i]));
+            for(let column=0; column<n; column++) {
+                let pivot = column;
+                for(let row=column+1; row<n; row++) {
+                    if(Math.abs(augmented[row][column]) > Math.abs(augmented[pivot][column])) pivot = row;
+                }
+                if(Math.abs(augmented[pivot][column]) < 1e-12) {
+                    throw new Error('SG 多项式拟合失败，请减小阶数或增大窗口。');
+                }
+                [augmented[column], augmented[pivot]] = [augmented[pivot], augmented[column]];
+                const divisor = augmented[column][column];
+                for(let j=column; j<=n; j++) augmented[column][j] /= divisor;
+                for(let row=0; row<n; row++) {
+                    if(row === column) continue;
+                    const factor = augmented[row][column];
+                    for(let j=column; j<=n; j++) augmented[row][j] -= factor * augmented[column][j];
+                }
+            }
+            return augmented.map(row => row[n]);
+        }
+
+        // Fit one local polynomial per frame and evaluate it at that frame. At
+        // both ends, shift the complete window inward instead of padding data.
+        function savitzkyGolaySmooth(raw, windowSize, polyorder) {
+            const count = raw.length;
+            if(windowSize > count) throw new Error(`SG 窗口 ${windowSize} 不能超过总帧数 ${count}。`);
+            const radius = (windowSize - 1) / 2;
+            const result = new Array(count);
+            for(let frame=0; frame<count; frame++) {
+                const start = Math.max(0, Math.min(frame-radius, count-windowSize));
+                const matrix = Array.from({length: polyorder+1}, () => Array(polyorder+1).fill(0));
+                const vector = Array(polyorder+1).fill(0);
+                for(let sample=start; sample<start+windowSize; sample++) {
+                    // Scaling improves numerical conditioning without changing
+                    // the polynomial fit or its value at the current frame.
+                    const x = (sample-frame) / Math.max(1, radius);
+                    const powers = [1];
+                    for(let power=1; power<=2*polyorder; power++) powers.push(powers[power-1] * x);
+                    for(let row=0; row<=polyorder; row++) {
+                        vector[row] += raw[sample] * powers[row];
+                        for(let column=0; column<=polyorder; column++) {
+                            matrix[row][column] += powers[row+column];
+                        }
+                    }
+                }
+                // x=0 at the requested frame, so the fitted intercept is the SG value.
+                result[frame] = solveLinearSystem(matrix, vector)[0];
+            }
+            return result;
+        }
+
+        function unwrapAngleSeries(values) {
+            const result = values.slice();
+            for(let i=1; i<result.length; i++) {
+                while(result[i] - result[i-1] > Math.PI) result[i] -= 2 * Math.PI;
+                while(result[i] - result[i-1] < -Math.PI) result[i] += 2 * Math.PI;
+            }
+            return result;
+        }
+
+        document.getElementById('applySgFilter').addEventListener('click', () => {
+            if(!motionData) return alert('请先加载动作。');
+            const allJoints = document.getElementById('sgAllJoints').checked;
+            if(!allJoints && activeIndex === -1) return alert('请先选择通道，或勾选“直接作用所有关节”。');
+            try {
+                const windowSize = smoothInteger('sgWindow', 3, 51);
+                const polyorder = smoothInteger('sgPolyorder', 0, 5);
+                const strength = smoothInteger('sgStrength', 1, 100) / 100;
+                if(windowSize % 2 === 0) throw new Error('SG 窗口必须为奇数，例如 5、11、21。');
+                if(polyorder >= windowSize) throw new Error('SG 多项式阶数必须小于窗口。');
+
+                if(allJoints) {
+                    const positions = motionData.joint_pos;
+                    const jointCount = motionData.joint_names.length;
+                    if(jointCount < 1) throw new Error('动作不包含可滤波的关节。');
+                    if(!Array.isArray(positions) || positions.length !== motionData.num_frames ||
+                       !positions.every(row => Array.isArray(row) && row.length === jointCount && row.every(Number.isFinite))) {
+                        throw new Error('joint_pos 的帧数、关节数或数值无效，无法执行全部关节 SG 滤波。');
+                    }
+
+                    // Compute every channel before changing motionData. If one
+                    // channel fails, no partial result is written.
+                    const output = positions.map(row => row.slice());
+                    for(let joint=0; joint<jointCount; joint++) {
+                        const raw = positions.map(row => row[joint]);
+                        const smoothed = savitzkyGolaySmooth(raw, windowSize, polyorder);
+                        for(let frame=0; frame<motionData.num_frames; frame++) {
+                            output[frame][joint] = raw[frame] + strength * (smoothed[frame] - raw[frame]);
+                            if(!Number.isFinite(output[frame][joint])) {
+                                throw new Error(`关节 ${motionData.joint_names[joint]} 的 SG 结果无效。`);
+                            }
+                        }
+                    }
+                    pushUndoState('SG filter all joints');
+                    motionData.joint_pos = output;
+                    document.getElementById('statusMsg').innerText = `${motionData.num_frames} frames | 全部 ${jointCount} 个关节 SG 滤波已应用`;
+                } else {
+                    const raw = Array.from({length: motionData.num_frames}, (_, i) => getChannelValue(i));
+                    if(!raw.every(Number.isFinite)) throw new Error('当前通道包含无效数值，无法执行 SG 滤波。');
+                    const continuous = activeType === 'rot' ? unwrapAngleSeries(raw) : raw;
+                    const smoothed = savitzkyGolaySmooth(continuous, windowSize, polyorder);
+                    const output = continuous.map((value, i) => value + strength * (smoothed[i] - value));
+
+                    pushUndoState(`SG filter ${document.getElementById('activeJointName').innerText}`);
+                    for(let i=0; i<output.length; i++) setChannelValue(i, output[i]);
+                    document.getElementById('statusMsg').innerText = `${motionData.num_frames} frames | SG 滤波已应用`;
+                }
+                updateMotionFrame(currentFrame); drawCurve();
+            } catch(error) {
+                alert(error.message);
+            }
+        });
+
+        document.getElementById('smoothBtn').addEventListener('click', () => {
+            if(!motionData || activeIndex === -1) return;
+            pushUndoState(`smooth ${document.getElementById('activeJointName').innerText}`);
+            const count = motionData.num_frames;
+            const raw = []; for(let i=0; i<count; i++) raw.push(getChannelValue(i));
+            const smoothed = [];
+            for(let i=0; i<count; i++) {
+                let sum=0, c=0;
+                for(let j=i-2; j<=i+2; j++) { if(j>=0 && j<count){ sum+=raw[j]; c++; } }
+                smoothed.push(sum/c);
+            }
+            for(let i=0; i<count; i++) setChannelValue(i, smoothed[i]);
+            drawCurve(); updateMotionFrame(currentFrame);
+        });
+
+        document.getElementById('applyJointOffsetBtn').addEventListener('click', () => {
+            if(!motionData) return alert("No data");
+            if(activeType !== 'joint' || activeIndex === -1) {
+                return alert("Select one joint channel first.");
+            }
+            const input = document.getElementById('jointOffsetRadInput');
+            const offsetRad = input.valueAsNumber;
+            if(!Number.isFinite(offsetRad)) return alert("Enter a valid offset angle in radians.");
+            if(offsetRad === 0) return alert("Offset is 0. Nothing changed.");
+
+            const jointName = motionData.joint_names[activeIndex] || document.getElementById('activeJointName').innerText;
+            const joint = jointsMap[jointName];
+            if(!joint) return alert(`URDF 中找不到关节 ${jointName}，无法应用偏置。`);
+            // Continuous joints have no angular bounds in URDF.
+            const continuous = joint.jointType === 'continuous';
+            if(!continuous && (joint.jointType !== 'revolute' ||
+                !Number.isFinite(joint.limit?.lower) || !Number.isFinite(joint.limit?.upper) ||
+                joint.limit.lower > joint.limit.upper)) {
+                return alert(`关节 ${jointName} 不是具有有效角度限位的旋转关节，无法应用偏置。`);
+            }
+
+            // Validate every frame before touching motion data or the undo stack.
+            const values = [];
+            let clampedFrames = 0;
+            for(let i=0; i<motionData.num_frames; i++) {
+                const original = motionData.joint_pos[i]?.[activeIndex];
+                const value = original + offsetRad;
+                if(!Number.isFinite(original) || !Number.isFinite(value)) {
+                    return alert(`关节 ${jointName} 第 ${i + 1} 帧（索引 ${i}）角度无效，未应用偏置。`);
+                }
+                const boundedValue = continuous ? value : Math.max(joint.limit.lower, Math.min(joint.limit.upper, value));
+                if(boundedValue !== value) clampedFrames++;
+                values.push(boundedValue);
+            }
+
+            pushUndoState(`joint offset ${jointName} ${offsetRad}rad`);
+            for(let i=0; i<values.length; i++) {
+                motionData.joint_pos[i][activeIndex] = values[i];
+            }
+
+            document.getElementById('statusMsg').innerText = `${motionData.num_frames} frames | ${jointName} offset ${offsetRad.toFixed(4)} rad | ${clampedFrames} 帧截断至 URDF 限位`;
+            updateMotionFrame(currentFrame);
+            drawCurve();
+        });
+
+        document.getElementById('clearJointOffsetBtn').addEventListener('click', () => {
+            document.getElementById('jointOffsetRadInput').value = 0;
+        });
+
+        document.getElementById('applyBaseHeightOffsetBtn').addEventListener('click', () => {
+            if(!motionData || motionData.num_frames < 1) return alert("Load motion data first.");
+            const input = document.getElementById('baseHeightOffsetInput');
+            const offsetMeters = input.valueAsNumber;
+            if(!Number.isFinite(offsetMeters)) return alert("Enter a valid height offset in meters.");
+            if(offsetMeters === 0) return alert("Offset is 0. Nothing changed.");
+
+            const positions = motionData.base_pos_w;
+            if(!Array.isArray(positions) || positions.length !== motionData.num_frames ||
+                !positions.every(p => Array.isArray(p) && p.length === 3 &&
+                    Number.isFinite(p[2]) && Number.isFinite(p[2] + offsetMeters))) {
+                return alert("Motion must contain a valid Base Z position for every frame.");
+            }
+
+            pushUndoState(`base height offset ${offsetMeters}m`);
+            for(const position of positions) {
+                position[2] += offsetMeters;
+            }
+
+            document.getElementById('statusMsg').innerText = `${motionData.num_frames} frames | Base Z offset ${offsetMeters > 0 ? '+' : ''}${offsetMeters} m`;
+            updateMotionFrame(currentFrame);
+            drawCurve();
+        });
+
+        document.getElementById('clearBaseHeightOffsetBtn').addEventListener('click', () => {
+            document.getElementById('baseHeightOffsetInput').value = 0;
+        });
+
+        // Pure sequence calculation; geometry sampling is kept separate so the
+        // window algorithm can also be used with externally measured clearances.
+        class SlidingWindowGroundLift {
+            constructor(windowFrames, stepFrames, clearance=0) {
+                if(!Number.isInteger(windowFrames) || windowFrames < 1 ||
+                   !Number.isInteger(stepFrames) || stepFrames < 1 || stepFrames > windowFrames) {
+                    throw new Error('窗口和步长必须是正整数，且步长不能超过窗口。');
+                }
+                if(!Number.isFinite(clearance) || clearance < 0) throw new Error('目标离地距离必须是非负米数。');
+                this.windowFrames = windowFrames;
+                this.stepFrames = stepFrames;
+                this.clearance = clearance;
+            }
+
+            calculate(heights) {
+                if(!heights.length || !heights.every(Number.isFinite)) throw new Error('离地距离包含无效数值。');
+                const markers = [];
+                for(let start=0; start<heights.length; start+=this.stepFrames) {
+                    const end = Math.min(heights.length, start+this.windowFrames);
+                    let lowest = Infinity;
+                    for(let i=start; i<end; i++) lowest = Math.min(lowest, heights[i]);
+                    markers.push({frame: (start+end-1)/2, lift: Math.max(0, this.clearance-lowest)});
+                    if(end === heights.length) break;
+                }
+                let markerIndex = 0;
+                const corrections = heights.map((height, i) => {
+                    while(markerIndex < markers.length-1 && markers[markerIndex+1].frame <= i) markerIndex++;
+                    const left = markers[markerIndex];
+                    const right = markers[Math.min(markerIndex+1, markers.length-1)];
+                    const t = right.frame === left.frame ? 0 : Math.max(0, Math.min(1, (i-left.frame)/(right.frame-left.frame)));
+                    const interpolated = left.lift + t*(right.lift-left.lift);
+                    // Interpolation can undershoot a window's worst frame.
+                    return Math.max(0, interpolated, this.clearance-height);
+                });
+                return {corrections, markers};
+            }
+        }
+
+        function prepareMotionPoseSampler(model, data) {
+            const count = data.num_frames;
+            for(const [key, width] of [['base_pos_w', 3], ['base_quat_w', 4], ['joint_pos', data.joint_names.length]]) {
+                if(!Array.isArray(data[key]) || data[key].length !== count ||
+                   !data[key].every(row => Array.isArray(row) && row.length === width && row.every(Number.isFinite))) {
+                    throw new Error(`动作字段 ${key} 的帧数、形状或数值无效。`);
+                }
+            }
+            if(!data.base_quat_w.every(q => Math.hypot(...q) > 1e-8)) throw new Error('动作包含无效的零四元数。');
+            const joints = data.joint_names.map(name => {
+                if(!model.joints[name]) throw new Error(`URDF 中找不到动作关节：${name}`);
+                return model.joints[name];
+            });
+            // Reset joints absent from the motion to a deterministic pose.
+            for(const joint of Object.values(model.joints)) joint.setJointValue(0);
+            return frame => {
+                model.position.fromArray(data.base_pos_w[frame]);
+                const q = data.base_quat_w[frame];
+                model.quaternion.set(q[1], q[2], q[3], q[0]).normalize();
+                joints.forEach((joint, i) => joint.setJointValue(data.joint_pos[frame][i]));
+                model.updateMatrixWorld(true);
+            };
+        }
+
+        function prepareAnkleGroundSampler(model, data, jointNames, soleOffset) {
+            if(!Number.isFinite(soleOffset) || soleOffset < 0) throw new Error('脚底偏移必须是非负米数。');
+            if(jointNames.length !== 2 || jointNames.some(name => !name) || jointNames[0] === jointNames[1]) {
+                throw new Error('请填写两个不同的左右 ankle_roll 关节名称。');
+            }
+            const ankles = jointNames.map(name => {
+                const joint = model.joints[name];
+                if(!joint) throw new Error(`URDF 中找不到脚踝关节：${name}`);
+                return joint;
+            });
+            const setPose = prepareMotionPoseSampler(model, data);
+            const position = new THREE.Vector3();
+            return frame => {
+                setPose(frame);
+                const lowest = Math.min(...ankles.map(joint => joint.getWorldPosition(position).z));
+                if(!Number.isFinite(lowest)) throw new Error(`第 ${frame} 帧脚踝高度无效。`);
+                return lowest-soleOffset;
+            };
+        }
+
+        function prepareGroundSampler(model, data, linkNames) {
+            const setPose = prepareMotionPoseSampler(model, data);
+            const meshes = new Set();
+            for(const name of linkNames) {
+                const link = model.links[name];
+                if(!link) throw new Error(`URDF 中找不到脚部 link：${name}`);
+                let found = false;
+                link.traverse(object => {
+                    if(!object.isMesh || !object.geometry?.attributes.position?.count) return;
+                    // Sample visual geometry only, not hidden collision shapes.
+                    let parent = object;
+                    while(parent && parent !== model) {
+                        if(parent.isURDFCollider || !parent.visible) return;
+                        parent = parent.parent;
+                    }
+                    meshes.add(object); found = true;
+                });
+                if(!found) throw new Error(`脚部 ${name} 没有加载完成的可视网格。`);
+            }
+            const vertices = Array.from(meshes, mesh => ({mesh, positions: mesh.geometry.attributes.position}));
+            return frame => {
+                setPose(frame);
+                let lowest = Infinity;
+                for(const {mesh, positions} of vertices) {
+                    const e = mesh.matrixWorld.elements;
+                    // World Z of every visual vertex; includes link transforms,
+                    // mesh origins/scales and full root orientation.
+                    for(let i=0; i<positions.count; i++) {
+                        const z = e[2]*positions.getX(i) + e[6]*positions.getY(i) + e[10]*positions.getZ(i) + e[14];
+                        lowest = Math.min(lowest, z);
+                    }
+                }
+                if(!Number.isFinite(lowest)) throw new Error(`第 ${frame} 帧离地距离无效。`);
+                return lowest;
+            };
+        }
+
+        function prepareFeetLeveler(model, data, pairs) {
+            const setPose = prepareMotionPoseSampler(model, data);
+            const names = pairs.flat();
+            if(new Set(names).size !== 4) throw new Error('请填写四个不同的踝关节名称。');
+            const legs = pairs.map(pair => {
+                const indices = pair.map(name => data.joint_names.indexOf(name));
+                const joints = pair.map(name => model.joints[name]);
+                if(indices.some(i => i < 0) || joints.some(j => !j)) throw new Error(`动作或模型缺少踝关节：${pair.join(', ')}`);
+                if(joints.some(j => j.jointType !== 'revolute')) throw new Error('调平需要两个带限位的旋转踝关节。');
+                let parent = joints[1].parent;
+                while(parent && parent !== joints[0]) parent = parent.parent;
+                if(!parent) throw new Error(`${pair[1]} 必须位于 ${pair[0]} 下游。`);
+                const bounds = joints.map(j => [j.limit.lower, j.limit.upper]);
+                if(bounds.some(([lo, hi]) => !Number.isFinite(lo) || !Number.isFinite(hi) || lo >= hi)) throw new Error('踝关节限位无效。');
+                return {pair, indices, joints, bounds};
+            });
+            const orientation = new THREE.Quaternion();
+            const normal = new THREE.Vector3();
+            const indices = legs.flatMap(leg => leg.indices);
+            return {indices, solve(frame) {
+                setPose(frame);
+                let maxTilt = 0;
+                for(const {pair, indices, joints, bounds} of legs) {
+                    const clamp = (v, i) => Math.max(bounds[i][0], Math.min(bounds[i][1], v));
+                    const evaluate = values => {
+                        joints.forEach((j, i) => j.setJointValue(values[i]));
+                        model.updateMatrixWorld(true);
+                        joints[1].getWorldQuaternion(orientation);
+                        normal.set(0, 0, 1).applyQuaternion(orientation).normalize();
+                        return [normal.x, normal.y, normal.z-1];
+                    };
+                    const cost = residual => residual.reduce((sum, value) => sum+value*value, 0);
+                    const original = indices.map(i => data.joint_pos[frame][i]);
+                    let best = original.map(clamp), bestCost = Infinity;
+                    // Solve only the two ankle angles; alternate seeds also handle
+                    // poor initial poses without changing the hips, knees or base.
+                    const seeds = [best, [0, 0].map(clamp), bounds.map(([lo, hi]) => (lo+hi)/2),
+                        [bounds[0][0], 0].map(clamp), [bounds[0][1], 0].map(clamp)];
+                    for(const seed of seeds) {
+                        let values = seed.slice();
+                        for(let iteration=0; iteration<50; iteration++) {
+                            const residual = evaluate(values), current = cost(residual);
+                            if(current < bestCost) { bestCost = current; best = values.slice(); }
+                            if(current < 1e-12) break;
+                            const columns = [0, 1].map(axis => {
+                                const plus = values.slice(), minus = values.slice();
+                                plus[axis] = clamp(values[axis]+1e-4, axis);
+                                minus[axis] = clamp(values[axis]-1e-4, axis);
+                                const upper = evaluate(plus), lower = evaluate(minus);
+                                return upper.map((v, k) => (v-lower[k])/(plus[axis]-minus[axis]));
+                            });
+                            const dot = (a,b) => a.reduce((s,v,k) => s+v*b[k],0);
+                            const a = dot(columns[0],columns[0])+1e-6;
+                            const b = dot(columns[0],columns[1]);
+                            const d = dot(columns[1],columns[1])+1e-6;
+                            const u = dot(columns[0],residual), v = dot(columns[1],residual);
+                            const det = a*d-b*b;
+                            const step = [(d*u-b*v)/det, (a*v-b*u)/det];
+                            const scale = Math.min(1, 0.25/Math.max(...step.map(Math.abs), 1e-12));
+                            let improved = false;
+                            for(let factor=scale; factor>=scale/64; factor/=2) {
+                                const candidate = values.map((value, i) => clamp(value-factor*step[i],i));
+                                if(cost(evaluate(candidate)) < current) { values = candidate; improved = true; break; }
+                            }
+                            if(!improved) break;
+                        }
+                        if(bestCost < 1e-12) break;
+                    }
+                    const residual = evaluate(best);
+                    const tilt = Math.acos(Math.max(-1, Math.min(1, residual[2]+1)))*180/Math.PI;
+                    if(!Number.isFinite(tilt) || tilt > 0.1) throw new Error(`第 ${frame} 帧 ${pair[1]} 无法在踝关节限位内调平（剩余倾角 ${tilt.toFixed(3)}°），本次未应用。`);
+                    maxTilt = Math.max(maxTilt, tilt);
+                    indices.forEach((index, i) => { data.joint_pos[frame][index] = best[i]; });
+                }
+                return maxTilt;
+            }};
+        }
+
+        async function applyGroundAdjustment(selectedAnkles=false, levelFeet=false) {
+            if(groundLiftBusy) return;
+            if(!robot || !motionData?.num_frames) return alert('请先加载机器人和动作。');
+            if(!selectedAnkles && !robotMeshesReady) return alert('机器人网格尚未全部加载，或加载失败；请等待或重新加载模型。');
+            if(selectedAnkles && !curveRangeActive()) return alert('请先启用两条范围线并选择范围。');
+            finishCurveDrag();
+            const dialog = document.getElementById('groundLiftDialog');
+            const status = document.getElementById(selectedAnkles ? 'ankleGroundStatus' : 'groundLiftStatus');
+            let cancelled = false;
+            const cancel = event => { event.preventDefault(); cancelled = true; };
+            const cancelButton = document.getElementById('cancelGroundLift');
+            try {
+                const windowFrames = document.getElementById('groundWindowFrames').valueAsNumber;
+                const solver = selectedAnkles ? null : new SlidingWindowGroundLift(
+                    windowFrames,
+                    document.getElementById('groundStepFrames').valueAsNumber,
+                    document.getElementById('groundClearance').valueAsNumber,
+                );
+                refreshBaseHeightRange();
+                const start = selectedAnkles ? baseHeightStart : 0;
+                const end = selectedAnkles ? baseHeightEnd : motionData.num_frames-1;
+                const linkNames = ['groundLeftLink', 'groundRightLink'].map(id => document.getElementById(id).value.trim());
+                if(!selectedAnkles && (linkNames.some(name => !name) || linkNames[0] === linkNames[1])) throw new Error('请填写两个不同的左右脚 link 名称。');
+                const originalRobot = robot;
+                const originalMotion = motionData;
+                const signature = JSON.stringify(motionData);
+                const snapshot = JSON.parse(signature);
+                const alsoGround = !levelFeet || document.getElementById('levelFeetAlsoGround').checked;
+                const leveler = levelFeet ? prepareFeetLeveler(robot.clone(true), snapshot, [
+                    [document.getElementById('levelLeftPitch').value.trim(), document.getElementById('groundLeftAnkle').value.trim()],
+                    [document.getElementById('levelRightPitch').value.trim(), document.getElementById('groundRightAnkle').value.trim()],
+                ]) : null;
+                // URDFRobot.clone rebuilds link/joint lookup tables; geometry is
+                // shared read-only. The visible robot and camera never move here.
+                const sample = !alsoGround ? () => 0 : selectedAnkles
+                    ? prepareAnkleGroundSampler(robot.clone(true), snapshot,
+                        ['groundLeftAnkle', 'groundRightAnkle'].map(id => document.getElementById(id).value.trim()),
+                        document.getElementById('ankleSoleOffset').valueAsNumber)
+                    : prepareGroundSampler(robot.clone(true), snapshot, linkNames);
+                groundLiftBusy = true;
+                keyStates.up = keyStates.down = false;
+                cancelButton.addEventListener('click', cancel);
+                dialog.addEventListener('cancel', cancel);
+                dialog.showModal();
+                const heights = [];
+                let maxTilt = 0, jointChangedFrames = 0;
+                let lastYield = performance.now();
+                for(let frame=start; frame<=end; frame++) {
+                    if(leveler) {
+                        maxTilt = Math.max(maxTilt, leveler.solve(frame));
+                        if(leveler.indices.some(i => Math.abs(snapshot.joint_pos[frame][i]-originalMotion.joint_pos[frame][i]) > 1e-9)) jointChangedFrames++;
+                    }
+                    heights.push(sample(frame));
+                    if(performance.now()-lastYield > 30 || frame === end) {
+                        document.getElementById('groundLiftProgress').innerText = `${levelFeet ? '双脚调平' : '离地检测'} ${start}–${end}：${frame-start+1}/${end-start+1} 帧`;
+                        await new Promise(resolve => setTimeout(resolve, 0));
+                        if(cancelled) { status.innerText = '已取消，动作未修改。'; return; }
+                        lastYield = performance.now();
+                    }
+                }
+                const {corrections, markers} = selectedAnkles
+                    ? {corrections: heights.map(height => alsoGround && Math.abs(height) > 1e-9 ? -height : 0), markers: []}
+                    : solver.calculate(heights);
+                if(robot !== originalRobot || motionData !== originalMotion || JSON.stringify(motionData) !== signature) {
+                    throw new Error('检测期间模型或动作发生变化，请重新检测。');
+                }
+                if(!corrections.every((value, i) => Number.isFinite(snapshot.base_pos_w[start+i][2]+value))) throw new Error('拔高后的 Base Z 数值无效。');
+                let maxLift = 0, maxLower = 0, minBefore = Infinity, minAfter = Infinity, changed = 0;
+                corrections.forEach((value, i) => {
+                    maxLift = Math.max(maxLift, value);
+                    maxLower = Math.max(maxLower, -value);
+                    minBefore = Math.min(minBefore, heights[i]);
+                    minAfter = Math.min(minAfter, heights[i]+value);
+                    if(Math.abs(value) > 1e-9) changed++;
+                });
+                if(changed || jointChangedFrames) {
+                    pushUndoState(levelFeet ? 'selected feet leveling' : selectedAnkles ? 'selected ankle ground compensation' : 'sliding window ground lift');
+                    if(leveler) for(let frame=start; frame<=end; frame++) {
+                        for(const index of leveler.indices) motionData.joint_pos[frame][index] = snapshot.joint_pos[frame][index];
+                    }
+                    corrections.forEach((value, i) => { motionData.base_pos_w[start+i][2] += value; });
+                    updateMotionFrame(currentFrame); drawCurve();
+                }
+                status.innerText = selectedAnkles
+                    ? `帧 ${start}–${end}，补偿 ${changed} 帧；最大上移 ${maxLift.toFixed(4)} m，下移 ${maxLower.toFixed(4)} m。${changed ? '已贴地，可撤销。' : '已贴地，无需调整。'}`
+                    : `帧 ${start}–${end}，${markers.length} 个窗口，拔高 ${changed} 帧；最大 +${maxLift.toFixed(4)} m；最低离地 ${minBefore.toFixed(4)} → ${minAfter.toFixed(4)} m。${changed ? '已应用，可撤销。' : '无需拔高。'}`;
+                if(levelFeet) status.innerText = `帧 ${start}–${end}，双脚已调平；调整踝角 ${jointChangedFrames} 帧，最大剩余倾角 ${maxTilt.toFixed(4)}°。${alsoGround ? `同时贴地 ${changed} 帧。` : 'Base 高度未修改。'}${changed || jointChangedFrames ? '可撤销。' : '无需调整。'}`;
+                document.getElementById('statusMsg').innerText = `${motionData.num_frames} frames | ${levelFeet ? '选区双脚调平完成' : selectedAnkles ? '选区脚踝贴地完成' : '窗口离地检查完成'}`;
+            } catch(error) {
+                status.innerText = `未修改动作：${error.message}`;
+            } finally {
+                groundLiftBusy = false;
+                cancelButton.removeEventListener('click', cancel);
+                dialog.removeEventListener('cancel', cancel);
+                if(dialog.open) dialog.close();
+            }
+        }
+        document.getElementById('applyWindowGroundLift').addEventListener('click', () => applyGroundAdjustment(false));
+        document.getElementById('applySelectedAnkleGround').addEventListener('click', () => applyGroundAdjustment(true));
+        document.getElementById('applySelectedFeetLevel').addEventListener('click', () => applyGroundAdjustment(true, true));
+
+        document.getElementById('undoBtn').addEventListener('click', () => {
+            undoLastStep();
+        });
+
+        function updateMotionFrame(f) {
+            if(!motionData) return;
+            f = Math.max(0, Math.min(Number.parseInt(f, 10) || 0, motionData.num_frames - 1));
+            currentFrame = f;
+            document.getElementById('frameDisplay').innerText = f;
+            slider.value = f;
+            if(activeIndex !== -1) {
+                document.getElementById('valDisplay').innerText = getChannelValue(f).toFixed(3);
+            }
+
+            if(!robot) return;
+            if(motionData.base_pos_w) {
+                const p = motionData.base_pos_w[f];
+                if(document.getElementById('followRobotCamera').checked) {
+                    const delta = new THREE.Vector3(p[0], p[1], p[2]).sub(robot.position);
+                    camera.position.add(delta);
+                    controls.target.add(delta);
+                }
+                robot.position.set(p[0], p[1], p[2]);
+            }
+            if(motionData.base_quat_w) {
+                const q = motionData.base_quat_w[f];
+                robot.quaternion.set(q[1], q[2], q[3], q[0]);
+            }
+            const val = motionData.joint_pos[f];
+            motionData.joint_names.forEach((n, i) => {
+                if(jointsMap[n]) jointsMap[n].setJointValue(val[i]);
+            });
+        }
+
+        document.getElementById('saveBtn').addEventListener('click', async () => {
+            if(!motionData) return alert("No data");
+            const btn = document.getElementById('saveBtn'); btn.innerText="Saving..."; btn.disabled=true;
+            try {
+                const res = await fetch('/save_motion', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(motionData) });
+                if(!res.ok) throw new Error("Err");
+                const blob = await res.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = motionData._source_filename || "edited_motion.npz";
+                document.body.appendChild(a); a.click(); a.remove();
+                URL.revokeObjectURL(url);
+            } catch(e) { alert(e); } finally { btn.innerText="Download Motion NPZ"; btn.disabled=false; }
+        });
+        window.addEventListener('resize', () => {
+            update3DViewport();
+            // Keep a previously enlarged panel inside the new viewport bounds.
+            const currentHeight = curveEditor.getBoundingClientRect().height || window.innerHeight * DEFAULT_EDITOR_HEIGHT_RATIO;
+            curveEditor.style.height = `${clampCurveEditorHeight(currentHeight)}px`;
+            resizeEditor();
+        });
+    </script>
+</body>
+</html>
